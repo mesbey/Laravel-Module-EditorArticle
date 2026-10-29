@@ -14,6 +14,7 @@ use App\Modules\Core\Permission;
 use App\Modules\Core\User;
 use App\Modules\Core\UserData;
 use App\Modules\Core\Role;
+use App\Modules\Core\ArticleSlugHistory;
 
 class ArticleController extends Controller
 {
@@ -43,7 +44,8 @@ class ArticleController extends Controller
                 },
                 'author' => function ($query) {
                     $query->select('user_id', 'name');
-                }
+                },
+                'publicAuthor.translations'
             ])
             ->orderBy('created_at', 'DESC')
             ->paginate(request()->input('per-page') ?? 20);
@@ -63,7 +65,8 @@ class ArticleController extends Controller
                 },
                 'categories' => function ($query) {
                     $query->select('categories.id', 'categories.name');
-                }
+                },
+                'publicAuthor.translations'
             ])
             ->first();
     }
@@ -110,7 +113,13 @@ class ArticleController extends Controller
             'language_id' => 'required',
             'categories' => 'present',
             'image' => 'required',
-            'slug' => 'required'
+            'slug' => 'required',
+            'localized_slug' => 'nullable|string|max:191',
+            'excerpt' => 'nullable|string',
+            'meta_title' => 'nullable|string|max:191',
+            'meta_description' => 'nullable|string|max:255',
+            'published_at' => 'nullable|date',
+            'public_author_id' => 'nullable|exists:authors,id'
         ]);
 
         $user = auth()->user();
@@ -118,6 +127,7 @@ class ArticleController extends Controller
         $article = Article::create([
             'slug' => request()->input('slug'),
             'author_id' => $user->user_id,
+            'public_author_id' => request()->input('public_author_id'),
             'image' => request()->input('image')
         ]);
 
@@ -132,10 +142,15 @@ class ArticleController extends Controller
             'article_id' => $article->id,
             'title' => request()->input('title'),
             'language_id' => request()->input('language_id'),
+            'slug' => request()->input('localized_slug', request()->input('slug')),
             'body' => request()->input('body'),
             'sub_title' => request()->input('sub_title'),
+            'excerpt' => request()->input('excerpt', request()->input('sub_title')),
+            'meta_title' => request()->input('meta_title'),
+            'meta_description' => request()->input('meta_description'),
             'keywords' => request()->input('keywords'),
             'published' => (request()->input('published') == "1") ? 1 : 0,
+            'published_at' => request()->input('published_at') ?: (request()->input('published') ? now() : null),
             'version' => 1
         ]);
 
@@ -155,6 +170,11 @@ class ArticleController extends Controller
             'body' => 'required',
             'keywords' => 'required',
             'published' => 'required',
+            'slug' => 'nullable|string|max:191',
+            'excerpt' => 'nullable|string',
+            'meta_title' => 'nullable|string|max:191',
+            'meta_description' => 'nullable|string|max:255',
+            'published_at' => 'nullable|date',
         ]);
 
         $language_id = Language::slug($language_slug)->firstOrFail()->id;
@@ -172,6 +192,14 @@ class ArticleController extends Controller
         $inputs['language_id'] = $language_id;
         $inputs['version'] = 1;
 
+        if (empty($inputs['slug'])) {
+            $inputs['slug'] = $article->slug;
+        }
+
+        if (!empty($inputs['published']) && empty($inputs['published_at'])) {
+            $inputs['published_at'] = now();
+        }
+
         ArticleContent::create($inputs);
 
         return response()->json();
@@ -184,17 +212,36 @@ class ArticleController extends Controller
             'sub_title' => 'required',
             'body' => 'required',
             'keywords' => 'required',
-            'published' => 'required'
+            'published' => 'required',
+            'slug' => 'nullable|string|max:191',
+            'excerpt' => 'nullable|string',
+            'meta_title' => 'nullable|string|max:191',
+            'meta_description' => 'nullable|string|max:255',
+            'published_at' => 'nullable|date'
         ]);
 
         $language_id = Language::slug($language_slug)->firstOrFail()->id;
 
         $article = Article::slug($article_slug)->withContent($language_id)->whereHasContent($language_id)->firstOrFail();
 
+        $newSlug = request()->input('slug');
+
+        if ($newSlug && $article->content->slug && $newSlug !== $article->content->slug) {
+            ArticleSlugHistory::firstOrCreate([
+                'article_id' => $article->id,
+                'locale' => $language_slug,
+                'slug' => $article->content->slug,
+            ]);
+        }
+
         if (
             $article->content->title != request()->input('title') ||
             $article->content->sub_title != request()->input('sub_title') ||
+            (request()->has('slug') && $article->content->slug != request()->input('slug')) ||
+            (request()->has('excerpt') && $article->content->excerpt != request()->input('excerpt')) ||
             $article->content->body != request()->input('body') ||
+            (request()->has('meta_title') && $article->content->meta_title != request()->input('meta_title')) ||
+            (request()->has('meta_description') && $article->content->meta_description != request()->input('meta_description')) ||
             $article->content->keywords != request()->input('keywords')
         ) {
             ArticleArchive::create($article->content->toArray());
@@ -203,8 +250,14 @@ class ArticleController extends Controller
         }
 
         $article->content->update(request()->only([
-            'title', 'sub_title', 'body', 'keywords', 'published'
+            'title', 'sub_title', 'excerpt', 'slug', 'body', 'meta_title',
+            'meta_description', 'keywords', 'published', 'published_at'
         ]));
+
+        if ($article->content->published && !$article->content->published_at) {
+            $article->content->published_at = now();
+            $article->content->save();
+        }
 
         return response()->json();
     }
@@ -214,7 +267,8 @@ class ArticleController extends Controller
         request()->validate([
             'slug' => 'required',
             'image' => 'required',
-            'categories' => 'present'
+            'categories' => 'present',
+            'public_author_id' => 'nullable|exists:authors,id'
         ]);
 
         $article = Article::slug($article_slug)->firstOrFail();
@@ -231,7 +285,7 @@ class ArticleController extends Controller
         }
 
         $article->update(request()->only([
-            'slug', 'image'
+            'slug', 'image', 'public_author_id'
         ]));
 
         return response()->json();

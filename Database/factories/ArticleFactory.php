@@ -18,7 +18,7 @@ use Faker\Generator as Faker;
 
 $factory->define(Article::class, function (Faker $faker) {
     return [
-        'slug' => $faker->word,
+        'slug' => $faker->unique()->slug,
         'author_id' => static function() {
             return factory(User::class)->create()->user_id;
         },

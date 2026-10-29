@@ -43,5 +43,7 @@ class ArticleObserver
         $article->olds()->forceDelete();
 
         $article->permissions()->delete();
+
+        $article->slugHistories()->delete();
     }
 }
